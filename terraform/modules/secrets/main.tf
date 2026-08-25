@@ -122,7 +122,9 @@ data "aws_iam_policy_document" "eso_permissions" {
 
     actions = ["kms:Decrypt"]
 
-    resources = [aws_kms_key.secrets.arn]
+    resources = [
+      "arn:aws:kms:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:key/*"
+    ]
 
     condition {
       test     = "StringEquals"

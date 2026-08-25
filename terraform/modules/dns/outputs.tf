@@ -4,8 +4,8 @@ output "zone_id" {
 }
 
 output "certificate_arn" {
-  description = "Validated ACM certificate ARN — use in alb.ingress.kubernetes.io/certificate-arn annotation"
-  value       = aws_acm_certificate_validation.main.certificate_arn
+  description = "ACM certificate ARN — use in alb.ingress.kubernetes.io/certificate-arn annotation"
+  value       = aws_acm_certificate.main.arn
 }
 
 output "certificate_domain" {

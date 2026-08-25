@@ -74,8 +74,8 @@ module "rds" {
   max_allocated_storage = 20
   multi_az              = false
 
-  # Dev: shorter retention, skip final snapshot for easy teardown
-  backup_retention_period = 7
+  # Dev: 1 day backup retention for Free Tier compliance, skip final snapshot for easy teardown
+  backup_retention_period = 1
   skip_final_snapshot     = true
   deletion_protection     = false
 

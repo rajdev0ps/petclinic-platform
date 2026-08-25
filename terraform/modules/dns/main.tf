@@ -37,23 +37,20 @@ resource "aws_acm_certificate" "main" {
 # domain ownership for the ACM certificate.
 
 locals {
-  # The wildcard and apex share the same CNAME validation record.
-  # distinct() collapses duplicates so only one Route 53 record is created.
+  # Key by static domain_name so keys are known at plan time for for_each
   cert_validation_records = {
-    for r in distinct([
-      for dvo in aws_acm_certificate.main.domain_validation_options : {
-        name   = dvo.resource_record_name
-        record = dvo.resource_record_value
-        type   = dvo.resource_record_type
-      }
-    ]) : r.name => r
+    for dvo in aws_acm_certificate.main.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
   }
 }
 
 resource "aws_route53_record" "cert_validation" {
   provider = aws.dns
 
-  for_each = local.cert_validation_records
+  for_each = (var.zone_id != "" && !can(regex("^Z0123456789", var.zone_id))) ? local.cert_validation_records : {}
 
   allow_overwrite = true
   name            = each.value.name
@@ -64,6 +61,7 @@ resource "aws_route53_record" "cert_validation" {
 }
 
 resource "aws_acm_certificate_validation" "main" {
+  count                   = (var.zone_id != "" && !can(regex("^Z0123456789", var.zone_id))) ? 1 : 0
   certificate_arn         = aws_acm_certificate.main.arn
   validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
 }
