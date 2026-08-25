@@ -2,5 +2,7 @@
 # Per-service replica counts, HPA, and PDB are defined in per-service values files.
 # This file holds only the settings that differ at the environment level.
 
+replicaCount: 1
+
 image:
   pullPolicy: Always
