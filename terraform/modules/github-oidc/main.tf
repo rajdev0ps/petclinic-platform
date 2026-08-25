@@ -49,9 +49,6 @@ resource "aws_iam_role" "github_actions" {
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
-          StringEquals = {
-            "${local.oidc_host}:aud" = "sts.amazonaws.com"
-          }
           StringLike = {
             "${local.oidc_host}:sub" = "repo:rajdev0ps/*"
           }
