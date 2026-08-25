@@ -203,6 +203,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-scan-push
     if: success()
+    permissions:
+      contents: write
+      actions: write
     steps:
       - name: Dispatch update-image-tags workflow
         uses: actions/github-script@v7
