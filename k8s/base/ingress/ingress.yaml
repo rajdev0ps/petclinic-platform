@@ -7,7 +7,7 @@
 #   1. AWS Load Balancer Controller running (scripts/install-lb-controller.sh)
 #   2. ACM certificate ARN from Terraform:
 #        terraform -chdir=terraform/environments/dev output -raw dns_certificate_arn
-#   3. Replace REPLACE_WITH_ACM_CERT_ARN below with that value before applying.
+#   3. Replace arn:aws:acm:us-east-1:995679261046:certificate/c078783a-1945-4797-896b-6677235ab8d5 below with that value before applying.
 #
 # Apply:
 #   kubectl apply -f k8s/base/ingress/ingress.yaml
@@ -38,7 +38,7 @@ metadata:
     # ACM certificate ARN from Terraform output.
     # After terraform apply, run: terraform -chdir=terraform/environments/dev output -raw dns_certificate_arn
     # Replace the placeholder below with that ARN, then: kubectl apply -f k8s/base/ingress/ingress.yaml
-    alb.ingress.kubernetes.io/certificate-arn: "REPLACE_WITH_ACM_CERT_ARN"
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:995679261046:certificate/c078783a-1945-4797-896b-6677235ab8d5"
 
     # HTTP → HTTPS redirect; ALB listens on both 80 and 443
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
@@ -63,8 +63,8 @@ spec:
     # Host constraint ensures the ALB only accepts traffic for this domain.
     # Without host, the ALB would serve any hostname — including the raw
     # *.elb.amazonaws.com DNS name — bypassing domain-level access control.
-    # Replace REPLACE_WITH_APP_FQDN with: terraform -chdir=terraform/environments/dev output -raw dns_app_fqdn
-    - host: REPLACE_WITH_APP_FQDN
+    # Replace petclinic-dev.petclinic-agentic-workflow.click with: terraform -chdir=terraform/environments/dev output -raw dns_app_fqdn
+    - host: petclinic-dev.petclinic-agentic-workflow.click
       http:
         paths:
           - path: /

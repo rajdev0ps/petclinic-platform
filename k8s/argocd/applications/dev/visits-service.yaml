@@ -18,7 +18,7 @@ spec:
         - name: image.registry
           value: "995679261046.dkr.ecr.us-east-1.amazonaws.com/petclinic-dev"
         - name: configMap.data.SPRING_DATASOURCE_URL
-          value: "RDS_JDBC_URL_DEV"
+          value: "jdbc:mysql://petclinic-dev-mysql.ca98wu4yw5gu.us-east-1.rds.amazonaws.com:3306/petclinic"
   destination:
     server: https://kubernetes.default.svc
     namespace: petclinic-dev
