@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: "PLATFORM_REPO_URL"
+    repoURL: "https://github.com/rajdev0ps/petclinic-platform.git"
     targetRevision: main
     path: helm/petclinic-service
     helm:
@@ -16,7 +16,7 @@ spec:
         - ../../helm-values/dev.yaml
       parameters:
         - name: image.registry
-          value: "ECR_REGISTRY_DEV"
+          value: "995679261046.dkr.ecr.us-east-1.amazonaws.com/petclinic-dev"
   destination:
     server: https://kubernetes.default.svc
     namespace: petclinic-dev
