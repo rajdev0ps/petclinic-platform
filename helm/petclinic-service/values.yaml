@@ -1,0 +1,81 @@
+replicaCount: 1
+
+image:
+  # registry: injected as ArgoCD Helm parameter from Application CRD (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/petclinic-dev)
+  # name: set in per-service values file (e.g. api-gateway)
+  # tag: updated by CI via update-image-tags.yml workflow
+  registry: ""
+  name: ""
+  tag: "latest"
+  pullPolicy: Always
+
+service:
+  port: 8080
+
+component: service
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+probes:
+  startup:
+    path: /actuator/health
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 30
+  readiness:
+    path: /actuator/health/readiness
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  liveness:
+    path: /actuator/health/liveness
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+configMap:
+  data: {}
+
+env: []
+
+initContainers: []
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+serviceAccount:
+  annotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: true
+
+volumes:
+  - name: tmp
+    emptyDir: {}
+
+volumeMounts:
+  - name: tmp
+    mountPath: /tmp

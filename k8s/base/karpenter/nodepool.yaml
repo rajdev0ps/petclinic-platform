@@ -1,0 +1,59 @@
+---
+# NodePool — defines the constraints Karpenter uses when provisioning nodes.
+# Capacity type: on-demand only while Graviton free trial is active (until Dec 2026).
+# Switch to nodepool-spot-dev.yaml after the free trial expires to enable Spot savings.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  template:
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: ["t4g.small", "t4g.medium"]
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+  # REQUIRED: without limits Karpenter has no upper bound and will provision
+  # nodes unbounded on large workloads — direct path to unexpected AWS spend.
+  limits:
+    cpu: "8"
+    memory: "32Gi"
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 30s
+---
+# EC2NodeClass — defines the EC2-specific configuration for provisioned nodes.
+# Subnet and security group selectors use the karpenter.sh/discovery tag.
+# These tags MUST be set on subnets and security groups in Terraform — if missing,
+# Karpenter cannot find network resources and node provisioning fails silently.
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  amiSelectorTerms:
+    - alias: al2023@latest
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: petclinic-dev
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: petclinic-dev
+  # MUST match exactly the instance profile created by terraform/modules/karpenter.
+  # Mismatch: node launches but kubelet cannot authenticate — node never joins cluster.
+  instanceProfile: "petclinic-dev-karpenter-node-profile"
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3

@@ -1,0 +1,47 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .agents/hooks/block-destroy.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .agents/hooks/block-dangerous-rm.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .agents/hooks/warn-apply-without-plan.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .agents/hooks/block-secret-commit.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*__ExecuteTerraformCommand|mcp__.*__ExecuteTerragruntCommand",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .agents/hooks/block-mcp-destroy.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "write_to_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .agents/hooks/suggest-validate.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

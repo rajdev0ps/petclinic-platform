@@ -1,0 +1,221 @@
+name: Build, Scan & Push Images
+
+on:
+  # Triggered by app repo CI after a push to main (repository_dispatch from spring-petclinic-microservices)
+  repository_dispatch:
+    types: [app-code-pushed]
+
+  # Manual trigger: build a specific service or all services for a given env and tag
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment (dev or prod)"
+        required: true
+        default: "dev"
+        type: choice
+        options: [dev, prod]
+      tag:
+        description: "Image tag — short commit SHA (e.g. abc1234)"
+        required: true
+        type: string
+      service:
+        description: "Single service to build (leave blank for all 8)"
+        required: false
+        type: string
+
+# Minimal permissions — id-token required for OIDC, contents for checkout
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  build-scan-push:
+    name: Build, Scan & Push
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - config-server
+          - discovery-server
+          - api-gateway
+          - customers-service
+          - visits-service
+          - vets-service
+          - genai-service
+          - admin-server
+
+    steps:
+      # ── Skip matrix entries when a single service is requested ──────────────
+      - name: Check if service is in scope
+        id: scope
+        run: |
+          REQUESTED="${{ github.event.inputs.service || github.event.client_payload.service || '' }}"
+          if [[ -n "$REQUESTED" && "$REQUESTED" != "${{ matrix.service }}" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Resolve tag and environment ─────────────────────────────────────────
+      - name: Resolve inputs
+        id: inputs
+        if: steps.scope.outputs.skip == 'false'
+        run: |
+          # workflow_dispatch uses github.event.inputs; repository_dispatch uses client_payload
+          TAG="${{ github.event.inputs.tag || github.event.client_payload.sha }}"
+          ENV="${{ github.event.inputs.environment || github.event.client_payload.environment || 'dev' }}"
+
+          if [[ -z "$TAG" ]]; then
+            echo "ERROR: tag/sha is required"
+            exit 1
+          fi
+
+          # Validate SHA format to prevent injection
+          if ! [[ "$TAG" =~ ^[a-zA-Z0-9._-]{1,128}$ ]]; then
+            echo "ERROR: invalid tag format: $TAG"
+            exit 1
+          fi
+
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          echo "env=$ENV"   >> "$GITHUB_OUTPUT"
+
+      # ── Checkout app source (read-only — do not commit back) ────────────────
+      - name: Checkout spring-petclinic-microservices
+        if: steps.scope.outputs.skip == 'false'
+        uses: actions/checkout@v4
+        with:
+          repository: rajdev0ps/spring-petclinic-microservices
+          ref: main
+          path: app
+
+      # ── AWS OIDC auth ────────────────────────────────────────────────────────
+      - name: Configure AWS credentials (OIDC)
+        if: steps.scope.outputs.skip == 'false'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: build-push-${{ matrix.service }}
+
+      # ── ECR login ────────────────────────────────────────────────────────────
+      - name: Login to Amazon ECR
+        if: steps.scope.outputs.skip == 'false'
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Java 17 + Maven build ────────────────────────────────────────────────
+      - name: Set up Java 17
+        if: steps.scope.outputs.skip == 'false'
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: maven
+
+      - name: Build JAR with Maven
+        if: steps.scope.outputs.skip == 'false'
+        working-directory: app
+        run: |
+          MODULE=$(jq -r '.["${{ matrix.service }}"]' <<'EOF'
+          {
+            "config-server":    "spring-petclinic-config-server",
+            "discovery-server": "spring-petclinic-discovery-server",
+            "api-gateway":      "spring-petclinic-api-gateway",
+            "customers-service":"spring-petclinic-customers-service",
+            "visits-service":   "spring-petclinic-visits-service",
+            "vets-service":     "spring-petclinic-vets-service",
+            "genai-service":    "spring-petclinic-genai-service",
+            "admin-server":     "spring-petclinic-admin-server"
+          }
+          EOF
+          )
+          echo "MODULE=$MODULE" >> "$GITHUB_ENV"
+          ./mvnw clean package -pl "$MODULE" -am -DskipTests --no-transfer-progress
+
+      # ── Docker buildx for linux/arm64 (Graviton t4g nodes) ──────────────────
+      - name: Set up QEMU
+        if: steps.scope.outputs.skip == 'false'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        if: steps.scope.outputs.skip == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (linux/arm64)
+        if: steps.scope.outputs.skip == 'false'
+        id: build
+        run: |
+          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          NAMESPACE="petclinic-${{ steps.inputs.outputs.env }}"
+          TAG="${{ steps.inputs.outputs.tag }}"
+          IMAGE_URI="${REGISTRY}/${NAMESPACE}/${{ matrix.service }}:${TAG}"
+
+          JAR=$(find app/${MODULE}/target -maxdepth 1 -name "${MODULE}-*.jar" \
+            ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -1)
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --build-arg ARTIFACT_NAME="$(basename "$JAR" .jar)" \
+            --file app/docker/Dockerfile \
+            --tag "$IMAGE_URI" \
+            --provenance=false \
+            --load \
+            "app/${MODULE}/target/"
+
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+      # ── Trivy vulnerability scan — FAIL on CRITICAL CVEs ────────────────────
+      - name: Scan image with Trivy
+        if: steps.scope.outputs.skip == 'false'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.build.outputs.image_uri }}
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Upload Trivy scan results
+        if: steps.scope.outputs.skip == 'false' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-${{ matrix.service }}
+          path: trivy-${{ matrix.service }}.sarif
+          retention-days: 30
+
+      # ── Push to ECR (only if scan passed) ───────────────────────────────────
+      - name: Push image to ECR
+        if: steps.scope.outputs.skip == 'false'
+        run: docker push ${{ steps.build.outputs.image_uri }}
+
+  # ── Notify platform repo to update helm-values image tags ───────────────────
+  notify-update-tags:
+    name: Trigger image tag update
+    runs-on: ubuntu-latest
+    needs: build-scan-push
+    if: success()
+    steps:
+      - name: Dispatch update-image-tags workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const sha   = '${{ github.event.inputs.tag || github.event.client_payload.sha }}';
+            const svc   = '${{ github.event.inputs.service || github.event.client_payload.service || '' }}';
+            const services = svc ||
+              'config-server discovery-server api-gateway customers-service visits-service vets-service genai-service admin-server';
+
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              event_type: 'app-image-built',
+              client_payload: { sha, services },
+            });

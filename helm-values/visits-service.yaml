@@ -1,0 +1,56 @@
+image:
+  name: visits-service
+  tag: "v1.0.0"
+
+service:
+  port: 8082
+
+component: service
+
+replicaCount: 1
+
+configMap:
+  data:
+    SPRING_PROFILES_ACTIVE: "docker,mysql"
+    CONFIG_SERVER_URL: "http://config-server:8888"
+    # SPRING_DATASOURCE_URL injected as ArgoCD Helm parameter — see customers-service.yaml for instructions.
+
+env:
+  - name: SPRING_DATASOURCE_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: rds-credentials
+        key: username
+  - name: SPRING_DATASOURCE_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: rds-credentials
+        key: password
+
+initContainers:
+  - name: wait-for-config-server
+    image: busybox:1.36
+    command: ['sh', '-c', 'until wget -qO- http://config-server:8888/actuator/health; do sleep 5; done']
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      readOnlyRootFilesystem: true
+  - name: wait-for-discovery-server
+    image: busybox:1.36
+    command: ['sh', '-c', 'until wget -qO- http://discovery-server:8761/actuator/health; do sleep 5; done']
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      readOnlyRootFilesystem: true
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

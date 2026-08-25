@@ -1,0 +1,92 @@
+name: Update Image Tags
+
+on:
+  repository_dispatch:
+    types: [app-image-built]
+
+# Minimal permissions at workflow level — write only granted on the commit step
+permissions:
+  contents: read
+
+jobs:
+  update-tags:
+    runs-on: ubuntu-latest
+    # contents: write scoped to job level only, not the full workflow
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout platform repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate inputs
+        env:
+          SHA: ${{ github.event.client_payload.sha }}
+          SERVICES: ${{ github.event.client_payload.services }}
+        run: |
+          # Reject malformed SHAs — must be 7-40 hex characters
+          if ! [[ "${SHA}" =~ ^[a-f0-9]{7,40}$ ]]; then
+            echo "ERROR: invalid SHA format: '${SHA}'"
+            exit 1
+          fi
+          # Validate each service token individually (prevents newline injection)
+          VALID_SERVICES="config-server discovery-server api-gateway customers-service visits-service vets-service genai-service admin-server"
+          for service in ${SERVICES}; do
+            if ! echo "${VALID_SERVICES}" | grep -qw "${service}"; then
+              echo "ERROR: unknown service '${service}'"
+              exit 1
+            fi
+          done
+
+      - name: Install yq (pinned to SHA-256)
+        env:
+          YQ_VERSION: "v4.44.2"
+          # SHA-256 of yq_linux_amd64 v4.44.2 — verify at https://github.com/mikefarah/yq/releases
+          YQ_SHA256: "cfbbb9ba72c9402ef4ab9d8f843439693dfb380927921740e51706d90869c7e1"
+        run: |
+          wget -qO /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum -c -
+          chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Update image.tag in helm-values
+        env:
+          SHA: ${{ github.event.client_payload.sha }}
+          SERVICES: ${{ github.event.client_payload.services }}
+        run: |
+          VALID_SERVICES="config-server discovery-server api-gateway customers-service visits-service vets-service genai-service admin-server"
+
+          for service in ${SERVICES}; do
+            if ! echo "${VALID_SERVICES}" | grep -qw "${service}"; then
+              echo "ERROR: unknown service '${service}' — skipping"
+              continue
+            fi
+
+            VALUES_FILE="helm-values/${service}.yaml"
+            if [[ ! -f "${VALUES_FILE}" ]]; then
+              echo "ERROR: ${VALUES_FILE} not found — skipping"
+              continue
+            fi
+
+            echo "Updating ${VALUES_FILE}: image.tag = ${SHA}"
+            yq -i ".image.tag = \"${SHA}\"" "${VALUES_FILE}"
+          done
+
+      - name: Commit and push updated helm-values
+        env:
+          SHA: ${{ github.event.client_payload.sha }}
+          SERVICES: ${{ github.event.client_payload.services }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add helm-values/
+          if git diff --cached --quiet; then
+            echo "No helm-values changed — nothing to commit"
+            exit 0
+          fi
+
+          git commit -m "ci: update image tags to ${SHA} (${SERVICES})"
+          git push

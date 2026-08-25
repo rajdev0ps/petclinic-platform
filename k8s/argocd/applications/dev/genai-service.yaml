@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: genai-service-dev
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: "PLATFORM_REPO_URL"
+    targetRevision: main
+    path: helm/petclinic-service
+    helm:
+      releaseName: genai-service
+      valueFiles:
+        - ../../helm-values/genai-service.yaml
+        - ../../helm-values/dev.yaml
+      parameters:
+        - name: image.registry
+          value: "ECR_REGISTRY_DEV"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: petclinic-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true

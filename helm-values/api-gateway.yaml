@@ -1,0 +1,44 @@
+image:
+  name: api-gateway
+  tag: "4b2b1e6"
+service:
+  port: 8080
+component: gateway
+replicaCount: 1
+resources:
+  requests:
+    cpu: 200m
+    memory: 128Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+configMap:
+  data:
+    SPRING_PROFILES_ACTIVE: "docker"
+    CONFIG_SERVER_URL: "http://config-server:8888"
+    DISCOVERY_SERVER_URL: "http://discovery-server:8761"
+initContainers:
+  - name: wait-for-config-server
+    image: busybox:1.36
+    command: ['sh', '-c', 'until wget -qO- http://config-server:8888/actuator/health; do sleep 5; done']
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      readOnlyRootFilesystem: true
+  - name: wait-for-discovery-server
+    image: busybox:1.36
+    command: ['sh', '-c', 'until wget -qO- http://discovery-server:8761/actuator/health; do sleep 5; done']
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      readOnlyRootFilesystem: true
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

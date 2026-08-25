@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: discovery-server-prod
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: "PLATFORM_REPO_URL"
+    targetRevision: main
+    path: helm/petclinic-service
+    helm:
+      releaseName: discovery-server
+      valueFiles:
+        - ../../helm-values/discovery-server.yaml
+        - ../../helm-values/prod.yaml
+      parameters:
+        - name: image.registry
+          value: "ECR_REGISTRY_PROD"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: petclinic-prod
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true

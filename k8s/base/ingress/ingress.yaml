@@ -1,0 +1,76 @@
+# PETPLAT-30: Ingress for API Gateway
+# Routes all external HTTPS traffic to the api-gateway service.
+# All backend routing (to customers, visits, vets, genai) is handled by
+# Spring Cloud Gateway — the ALB only needs one path rule.
+#
+# Prerequisites:
+#   1. AWS Load Balancer Controller running (scripts/install-lb-controller.sh)
+#   2. ACM certificate ARN from Terraform:
+#        terraform -chdir=terraform/environments/dev output -raw dns_certificate_arn
+#   3. Replace REPLACE_WITH_ACM_CERT_ARN below with that value before applying.
+#
+# Apply:
+#   kubectl apply -f k8s/base/ingress/ingress.yaml
+#
+# After applying, get ALB hostname for Route 53 wiring (PETPLAT-31):
+#   kubectl get ingress petclinic-ingress -n petclinic-dev \
+#     -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: petclinic-ingress
+  namespace: petclinic-dev
+  labels:
+    app.kubernetes.io/name: petclinic-ingress
+    app.kubernetes.io/part-of: petclinic
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/component: ingress
+  annotations:
+    # ALB Ingress Controller — see docs/technical-spec.md#dns-and-ingress
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+
+    # TLS 1.2+ with TLS 1.3 support. Explicitly disables TLS 1.0/1.1 (HIGH-006).
+    alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS13-1-2-2021-06"
+
+    # ACM certificate ARN from Terraform output.
+    # After terraform apply, run: terraform -chdir=terraform/environments/dev output -raw dns_certificate_arn
+    # Replace the placeholder below with that ARN, then: kubectl apply -f k8s/base/ingress/ingress.yaml
+    alb.ingress.kubernetes.io/certificate-arn: "REPLACE_WITH_ACM_CERT_ARN"
+
+    # HTTP → HTTPS redirect; ALB listens on both 80 and 443
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+
+    # Health check on the Spring Boot actuator endpoint
+    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health
+    alb.ingress.kubernetes.io/healthcheck-port: "8080"
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+
+    # Sharing one ALB across Ingress objects saves cost
+    alb.ingress.kubernetes.io/group.name: petclinic
+
+spec:
+  # ingressClassName is the modern replacement for the deprecated
+  # kubernetes.io/ingress.class annotation (LOW-001 fix)
+  ingressClassName: alb
+  rules:
+    # Host constraint ensures the ALB only accepts traffic for this domain.
+    # Without host, the ALB would serve any hostname — including the raw
+    # *.elb.amazonaws.com DNS name — bypassing domain-level access control.
+    # Replace REPLACE_WITH_APP_FQDN with: terraform -chdir=terraform/environments/dev output -raw dns_app_fqdn
+    - host: REPLACE_WITH_APP_FQDN
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8080

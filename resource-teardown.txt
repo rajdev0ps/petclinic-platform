@@ -1,0 +1,351 @@
+================================================================================
+  PETCLINIC PLATFORM — GRACEFUL TEARDOWN GUIDE
+  Complete step-by-step guide to destroy ALL resources cleanly,
+  leaving nothing behind in AWS.
+
+  !! WARNING: This is IRREVERSIBLE. All data will be permanently deleted. !!
+  !! Take RDS snapshots and ECR image backups BEFORE proceeding.          !!
+================================================================================
+
+IMPORTANT NOTES
+───────────────
+- Execute steps IN ORDER. Skipping steps creates orphaned resources (VPCs,
+  ELBs, ENIs) that prevent Terraform from destroying infrastructure cleanly.
+- RDS deletion protection must be disabled before Terraform can delete the DB.
+- Karpenter must be uninstalled BEFORE node groups are destroyed or Karpenter
+  will re-provision nodes in a loop.
+- ALBs created by the LB Controller must be deleted BEFORE the VPC/SGs are
+  destroyed or subnet/SG deletion will fail.
+- Terraform state bucket is deleted LAST (it holds state for everything else).
+
+================================================================================
+PRE-TEARDOWN: Backup
+================================================================================
+
+  # Take a final RDS snapshot (dev):
+  aws rds create-db-snapshot \
+    --db-instance-identifier petclinic-dev-mysql \
+    --db-snapshot-identifier petclinic-dev-final-backup-$(date +%Y%m%d)
+
+  # Prod RDS has deletion_protection=true — the snapshot is created automatically
+  # when skip_final_snapshot=false triggers a destroy.
+
+  # (Optional) Save ECR image digests:
+  aws ecr describe-images --repository-name petclinic-dev/api-gateway \
+    --query 'imageDetails[*].imageDigest' --output text
+
+================================================================================
+STEP 1: Disable ArgoCD auto-sync to stop reconciliation
+================================================================================
+
+  kubectl port-forward svc/argocd-server -n argocd 8443:443 &
+  ARGOCD_PASSWORD=$(kubectl get secret argocd-initial-admin-secret -n argocd \
+    -o jsonpath='{.data.password}' | base64 -d)
+  argocd login localhost:8443 --insecure --username admin --password "${ARGOCD_PASSWORD}"
+
+  # Disable auto-sync on all dev apps:
+  for app in config-server-dev discovery-server-dev api-gateway-dev \
+             customers-service-dev visits-service-dev vets-service-dev \
+             genai-service-dev admin-server-dev; do
+    argocd app set "${app}" --sync-policy none
+  done
+
+================================================================================
+STEP 2: Delete ArgoCD Applications (this triggers K8s resource deletion)
+================================================================================
+
+  # Delete dev Applications — ArgoCD will delete all managed K8s resources:
+  kubectl delete -f k8s/argocd/applications/dev/ --ignore-not-found
+
+  # Delete prod Applications (if deployed):
+  kubectl delete -f k8s/argocd/applications/prod/ --ignore-not-found
+
+  # Wait for petclinic pods to terminate (up to 5 minutes):
+  kubectl wait --for=delete pod --all -n petclinic-dev --timeout=300s 2>/dev/null || true
+  kubectl wait --for=delete pod --all -n petclinic-prod --timeout=300s 2>/dev/null || true
+
+================================================================================
+STEP 3: Delete the Ingress (removes the ALB — CRITICAL)
+================================================================================
+
+  # The AWS Load Balancer Controller watches Ingress deletions and removes the ALB.
+  # If the ALB exists when Terraform runs, VPC/SG destruction will fail.
+  kubectl delete -f k8s/base/ingress/ingress.yaml --ignore-not-found
+
+  # Wait for ALB to be deprovisioned (up to 5 minutes):
+  echo "Waiting for ALB to be deprovisioned..."
+  sleep 60
+  # Verify ALB is gone:
+  aws elbv2 describe-load-balancers \
+    --query "LoadBalancers[?contains(LoadBalancerName,'petclinic')]" --output table
+
+================================================================================
+STEP 4: Uninstall Karpenter (must be before node group deletion)
+================================================================================
+
+  # Deleting Karpenter first prevents it from re-provisioning terminated nodes.
+  # First: remove NodePool and EC2NodeClass so Karpenter releases its nodes:
+  kubectl delete -f k8s/base/karpenter/nodepool.yaml --ignore-not-found
+
+  # Wait for Karpenter-managed nodes to drain and terminate:
+  echo "Waiting for Karpenter nodes to terminate..."
+  sleep 120
+
+  # Uninstall Karpenter Helm release:
+  helm uninstall karpenter -n kube-system --ignore-not-found
+
+================================================================================
+STEP 5: Uninstall AWS Load Balancer Controller
+================================================================================
+
+  helm uninstall aws-load-balancer-controller -n kube-system --ignore-not-found
+
+================================================================================
+STEP 6: Uninstall External Secrets Operator
+================================================================================
+
+  # Delete ExternalSecret CRs first (triggers K8s secret deletion):
+  kubectl delete -f k8s/base/external-secrets/ --ignore-not-found
+
+  # Uninstall ESO:
+  helm uninstall external-secrets -n external-secrets --ignore-not-found
+
+  # Delete the namespace:
+  kubectl delete namespace external-secrets --ignore-not-found
+
+================================================================================
+STEP 7: Uninstall ArgoCD
+================================================================================
+
+  kubectl delete -f k8s/argocd/install/install.yaml --ignore-not-found
+  kubectl delete -f k8s/argocd/install/namespace.yaml --ignore-not-found
+
+  # Wait for argocd namespace to be deleted:
+  kubectl wait --for=delete namespace/argocd --timeout=120s 2>/dev/null || true
+
+================================================================================
+STEP 8: Delete petclinic namespaces
+================================================================================
+
+  kubectl delete namespace petclinic-dev --ignore-not-found
+  kubectl delete namespace petclinic-prod --ignore-not-found
+
+  # Wait:
+  kubectl wait --for=delete namespace/petclinic-dev --timeout=120s 2>/dev/null || true
+
+================================================================================
+STEP 9: Verify no K8s-created AWS resources remain
+================================================================================
+
+  # Check for any ALBs:
+  aws elbv2 describe-load-balancers \
+    --query "LoadBalancers[?contains(LoadBalancerName,'petclinic') || contains(LoadBalancerName,'k8s')]" \
+    --output table
+
+  # Check for security groups created by the LB controller (tagged with elbv2.k8s.aws/cluster):
+  aws ec2 describe-security-groups \
+    --filters "Name=tag-key,Values=elbv2.k8s.aws/cluster" \
+    --query "SecurityGroups[*].[GroupId,GroupName]" --output table
+
+  # If any LB or SG remain, delete manually:
+  # aws elbv2 delete-load-balancer --load-balancer-arn <arn>
+  # aws ec2 delete-security-group --group-id <sg-id>
+
+================================================================================
+STEP 10: Disable RDS deletion protection (prod only)
+================================================================================
+
+  # Prod RDS has deletion_protection = true — must be disabled before destroy.
+  aws rds modify-db-instance \
+    --db-instance-identifier petclinic-prod-mysql \
+    --no-deletion-protection \
+    --apply-immediately
+
+  # Wait for modification to complete:
+  aws rds wait db-instance-available --db-instance-identifier petclinic-prod-mysql
+
+  # Also update terraform.tfvars so Terraform doesn't re-enable it:
+  # Set: deletion_protection = false   (in prod RDS module or override variable)
+
+================================================================================
+STEP 11: Delete ECR images (required — Terraform cannot delete non-empty repos)
+================================================================================
+
+  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+  REGION=$(aws configure get region)
+
+  for env in dev prod; do
+    for svc in config-server discovery-server api-gateway customers-service \
+               visits-service vets-service genai-service admin-server; do
+      REPO="petclinic-${env}/${svc}"
+      echo "Deleting images in: ${REPO}"
+      # Get all image IDs
+      IMAGE_IDS=$(aws ecr list-images --repository-name "${REPO}" \
+        --query 'imageIds[*]' --output json 2>/dev/null)
+      if [ "${IMAGE_IDS}" != "[]" ] && [ -n "${IMAGE_IDS}" ]; then
+        aws ecr batch-delete-image \
+          --repository-name "${REPO}" \
+          --image-ids "${IMAGE_IDS}" \
+          --output table
+      fi
+    done
+  done
+
+================================================================================
+STEP 12: Terraform destroy — dev environment
+================================================================================
+
+  cd terraform/environments/dev
+
+  # Unlock state if there is a stuck lock:
+  # terraform force-unlock <LOCK_ID>
+
+  terraform init -backend-config=backend.hcl
+  terraform plan -destroy -out plan.out
+
+  # REVIEW THE PLAN CAREFULLY — confirm all expected resources are listed.
+  terraform apply plan.out
+
+  cd ../../../
+
+================================================================================
+STEP 13: Terraform destroy — prod environment
+================================================================================
+
+  cd terraform/environments/prod
+
+  terraform init -backend-config=backend.hcl
+  terraform plan -destroy -out plan.out
+  terraform apply plan.out
+
+  cd ../../../
+
+================================================================================
+STEP 14: Terraform destroy — bootstrap (state backend)
+================================================================================
+
+  # This deletes the S3 bucket and DynamoDB lock table.
+  # The state bucket has prevent_destroy = true. Remove it first:
+
+  cd terraform/bootstrap
+
+  # Remove prevent_destroy lifecycle from main.tf:
+  # (Edit terraform/bootstrap/main.tf — remove the lifecycle block from aws_s3_bucket.tfstate)
+  # Then:
+  terraform init
+  terraform destroy -var="region=<YOUR_REGION>"
+
+  # The S3 bucket must be empty before deletion — Terraform handles this with force_destroy
+  # if configured. If it fails, empty manually:
+  STATE_BUCKET="petclinic-tfstate-$(aws sts get-caller-identity --query Account --output text)-<REGION>"
+  aws s3 rm "s3://${STATE_BUCKET}" --recursive
+  aws s3api delete-bucket --bucket "${STATE_BUCKET}"
+  aws dynamodb delete-table --table-name petclinic-terraform-locks
+
+  cd ../../../
+
+================================================================================
+STEP 15: Post-teardown verification scan
+================================================================================
+
+  # Run these commands to confirm NOTHING remains tagged Project=petclinic:
+
+  echo "=== EKS clusters ==="
+  aws eks list-clusters --query "clusters[?contains(@,'petclinic')]"
+
+  echo "=== RDS instances ==="
+  aws rds describe-db-instances \
+    --filters "Name=tag:Project,Values=petclinic" \
+    --query "DBInstances[*].[DBInstanceIdentifier,DBInstanceStatus]" --output table
+
+  echo "=== EC2 instances ==="
+  aws ec2 describe-instances \
+    --filters "Name=tag:Project,Values=petclinic" "Name=instance-state-name,Values=running,stopped,stopping" \
+    --query "Reservations[*].Instances[*].[InstanceId,State.Name,InstanceType]" --output table
+
+  echo "=== VPCs ==="
+  aws ec2 describe-vpcs \
+    --filters "Name=tag:Project,Values=petclinic" \
+    --query "Vpcs[*].[VpcId,CidrBlock,State]" --output table
+
+  echo "=== Security groups ==="
+  aws ec2 describe-security-groups \
+    --filters "Name=tag:Project,Values=petclinic" \
+    --query "SecurityGroups[*].[GroupId,GroupName]" --output table
+
+  echo "=== IAM roles ==="
+  aws iam list-roles \
+    --query "Roles[?contains(RoleName,'petclinic')].RoleName" --output table
+
+  echo "=== Secrets Manager ==="
+  aws secretsmanager list-secrets \
+    --filters Key=name,Values=petclinic \
+    --query "SecretList[*].[Name,DeletedDate]" --output table
+
+  echo "=== ECR repositories ==="
+  aws ecr describe-repositories \
+    --query "repositories[?contains(repositoryName,'petclinic')].repositoryName" --output table
+
+  echo "=== KMS keys (CMKs) ==="
+  aws kms list-aliases \
+    --query "Aliases[?contains(AliasName,'petclinic')].AliasName" --output table
+
+  echo "=== SQS queues ==="
+  aws sqs list-queues --queue-name-prefix petclinic
+
+  echo "=== EventBridge rules ==="
+  aws events list-rules --name-prefix petclinic \
+    --query "Rules[*].[Name,State]" --output table
+
+  echo "=== ACM certificates ==="
+  aws acm list-certificates \
+    --query "CertificateSummaryList[*].[DomainName,CertificateArn,Status]" --output table
+
+  echo "=== S3 buckets ==="
+  aws s3 ls | grep petclinic
+
+  echo "=== DynamoDB tables ==="
+  aws dynamodb list-tables \
+    --query "TableNames[?contains(@,'petclinic')]" --output table
+
+  echo "=== CloudWatch log groups ==="
+  aws logs describe-log-groups \
+    --log-group-name-prefix /aws/eks/petclinic \
+    --query "logGroups[*].logGroupName" --output table
+
+  echo "=== Budget alerts ==="
+  aws budgets describe-budgets \
+    --account-id "$(aws sts get-caller-identity --query Account --output text)" \
+    --query "Budgets[?contains(BudgetName,'petclinic')].BudgetName" --output table
+
+  echo ""
+  echo "If ALL outputs above are empty, teardown is COMPLETE."
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Problem: "DependencyViolation" when destroying VPC/SG
+Solution: An ENI or security group from the LB controller still exists.
+  - Run step 9 commands to identify and manually delete the resources.
+  - Then re-run terraform destroy.
+
+Problem: Terraform destroy fails with "RDS instance has deletion protection enabled"
+Solution: Run step 10 to disable deletion protection first.
+
+Problem: "BucketNotEmpty" when destroying S3 state bucket
+Solution: Empty the bucket manually:
+  aws s3 rm s3://<bucket-name> --recursive
+
+Problem: Terraform state is locked after failed destroy
+Solution: aws dynamodb delete-item --table-name petclinic-terraform-locks \
+  --key '{"LockID": {"S": "petclinic/dev/terraform.tfstate"}}'
+
+Problem: Karpenter keeps launching new nodes during teardown
+Solution: Make sure the NodePool was deleted (step 4) before Karpenter is uninstalled.
+  If nodes keep appearing: kubectl patch nodepool default --type=json \
+    -p='[{"op":"replace","path":"/spec/limits","value":{"cpu":0,"memory":"0"}}]'
+
+================================================================================
+END OF TEARDOWN GUIDE
+================================================================================

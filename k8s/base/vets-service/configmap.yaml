@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vets-service
+  namespace: petclinic-dev
+  labels:
+    app.kubernetes.io/name: vets-service
+    app.kubernetes.io/part-of: petclinic
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: service
+data:
+  # production profile required for Caffeine cache (CacheConfig gated on @Profile("production"))
+  SPRING_PROFILES_ACTIVE: "docker,mysql,production"
+  CONFIG_SERVER_URL: "http://config-server:8888"
+  # Prod overlay must patch this value with the prod RDS endpoint
+  SPRING_DATASOURCE_URL: "jdbc:mysql://petclinic-dev-mysql.ctsqcf8pctvr.us-east-1.rds.amazonaws.com:3306/petclinic"

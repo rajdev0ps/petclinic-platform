@@ -1,0 +1,31 @@
+---
+# Default-deny for petclinic-dev: block all ingress and egress unless explicitly allowed.
+# Apply allow-policies.yaml alongside this to restore required traffic paths.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: petclinic-dev
+  labels:
+    app.kubernetes.io/part-of: petclinic
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Default-deny for petclinic-prod: same policy applied to prod namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: petclinic-prod
+  labels:
+    app.kubernetes.io/part-of: petclinic
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

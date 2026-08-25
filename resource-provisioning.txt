@@ -1,0 +1,334 @@
+================================================================================
+  PETCLINIC PLATFORM — RESOURCE PROVISIONING GUIDE
+  Complete step-by-step guide to stand up the entire platform from scratch
+  in a single AWS account.
+================================================================================
+
+PREREQUISITES
+─────────────
+Tools required (install before starting):
+  - AWS CLI v2       https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html
+  - Terraform >= 1.6 https://developer.hashicorp.com/terraform/install
+  - kubectl          https://kubernetes.io/docs/tasks/tools/
+  - Helm >= 3.12     https://helm.sh/docs/intro/install/
+  - ArgoCD CLI       https://argo-cd.readthedocs.io/en/stable/cli_installation/
+  - Docker + buildx  https://docs.docker.com/engine/install/
+  - git
+  - jq               https://jqlang.github.io/jq/download/
+
+AWS account requirements:
+  - AWS account with admin-level access (for initial provisioning)
+  - A registered domain with a Route 53 public hosted zone in the target account
+    (purchase at AWS Route 53 > Registered Domains, then create a hosted zone)
+  - GitHub organization/user with two forked repositories:
+      1. Fork of spring-petclinic-microservices  (the application)
+      2. Fork of petclinic-platform               (this repo)
+
+================================================================================
+STEP 1: Configure AWS credentials
+================================================================================
+
+  aws configure
+  # Enter: Access Key ID, Secret Access Key, Region (e.g. us-east-1), output: json
+
+  # Verify:
+  aws sts get-caller-identity
+
+================================================================================
+STEP 2: Fork both repos and clone the platform repo
+================================================================================
+
+  # On GitHub: fork both repos under your account/org.
+
+  git clone https://github.com/<YOUR_ORG>/petclinic-platform.git
+  cd petclinic-platform
+
+  # Also clone the microservices repo alongside (sibling directory):
+  git clone https://github.com/<YOUR_ORG>/spring-petclinic-microservices.git ../spring-petclinic-microservices
+
+================================================================================
+STEP 3: Bootstrap Terraform state backend (ONCE per account)
+================================================================================
+
+  # This creates the S3 bucket and DynamoDB table that store Terraform state.
+  # Uses local state — safe for a one-time bootstrap.
+
+  cd terraform/bootstrap
+  terraform init
+  terraform apply -var="region=us-east-1"
+
+  # Note the outputs: state_bucket_name and lock_table_name
+  terraform output
+
+  cd ../../../   # back to repo root
+
+================================================================================
+STEP 4: Run setup-env.sh --init
+================================================================================
+
+  ./scripts/setup-env.sh --init
+
+  # The script will prompt you for:
+  #   - GitHub app repo (e.g. myorg/spring-petclinic-microservices)
+  #   - GitHub platform repo (e.g. myorg/petclinic-platform)
+  #   - Domain name (e.g. example.com) — must have a Route 53 hosted zone
+  #   - Route 53 hosted zone ID (starts with Z)
+  #   - Your public IP in CIDR notation (e.g. 1.2.3.4/32)
+  #   - Budget alert email address
+  #
+  # It generates (gitignored):
+  #   terraform/environments/dev/backend.hcl
+  #   terraform/environments/prod/backend.hcl
+  #   terraform/environments/dev/terraform.tfvars
+  #   terraform/environments/prod/terraform.tfvars
+  #
+  # It updates (commit these):
+  #   k8s/argocd/applications/**/*.yaml  (repoURL and ECR registry)
+
+  # Commit the updated ArgoCD CRDs:
+  git add k8s/argocd/applications/
+  git commit -m "chore: configure ArgoCD Application CRDs for new deployment"
+  git push
+
+================================================================================
+STEP 5: Set OpenAI API key secret (required for genai-service)
+================================================================================
+
+  export TF_VAR_openai_api_key="sk-your-openai-key-here"
+  # Or set to a placeholder if not using genai-service: export TF_VAR_openai_api_key="placeholder"
+
+================================================================================
+STEP 6: Apply dev Terraform environment
+================================================================================
+
+  cd terraform/environments/dev
+
+  # Phase 1: init with backend
+  terraform init -backend-config=backend.hcl
+
+  # Plan (review carefully — no resources should be destroyed on first apply)
+  terraform plan -out plan.out
+
+  # Apply
+  terraform apply plan.out
+
+  # Show outputs (needed for later steps)
+  terraform output
+
+  cd ../../../
+
+================================================================================
+STEP 7: Configure kubectl
+================================================================================
+
+  # Get the kubeconfig command from Terraform output:
+  terraform -chdir=terraform/environments/dev output -raw eks_kubeconfig_command
+  # Run the output command, e.g.:
+  aws eks update-kubeconfig --region us-east-1 --name petclinic-dev
+
+  # Verify:
+  kubectl get nodes
+
+================================================================================
+STEP 8: Run setup-env.sh --post-apply (populate Terraform outputs)
+================================================================================
+
+  ./scripts/setup-env.sh --post-apply
+
+  # This reads Terraform outputs and updates:
+  #   k8s/argocd/applications/dev/{customers,visits,vets}-service.yaml  (RDS JDBC URL)
+  #   k8s/base/ingress/ingress.yaml  (ACM cert ARN and app FQDN)
+
+  git add k8s/argocd/applications/dev/ k8s/base/ingress/
+  git commit -m "chore: populate rds endpoint and acm cert from terraform outputs"
+  git push
+
+================================================================================
+STEP 9: Create Kubernetes namespaces
+================================================================================
+
+  kubectl apply -f k8s/base/namespaces.yaml
+
+================================================================================
+STEP 10: Install ArgoCD
+================================================================================
+
+  kubectl apply -f k8s/argocd/install/namespace.yaml
+  kubectl apply -f k8s/argocd/install/install.yaml
+
+  # Wait for ArgoCD to be ready (2-3 minutes):
+  kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=300s
+
+  # Get initial admin password:
+  kubectl get secret argocd-initial-admin-secret -n argocd \
+    -o jsonpath='{.data.password}' | base64 -d; echo
+
+  # Apply RBAC ConfigMap:
+  kubectl apply -f k8s/argocd/argocd-rbac-cm.yaml
+
+  # Port-forward ArgoCD UI (optional):
+  kubectl port-forward svc/argocd-server -n argocd 8443:443
+  # Open: https://localhost:8443
+
+================================================================================
+STEP 11: Install External Secrets Operator (ESO)
+================================================================================
+
+  ./scripts/install-eso.sh
+
+  # Verify:
+  kubectl get pods -n external-secrets
+
+  # Apply ExternalSecret CRs:
+  kubectl apply -f k8s/base/external-secrets/
+
+================================================================================
+STEP 12: Install AWS Load Balancer Controller
+================================================================================
+
+  # Get the LB controller IAM role ARN from Terraform:
+  LB_ROLE_ARN=$(terraform -chdir=terraform/environments/dev output -raw dns_lb_controller_role_arn)
+
+  ./scripts/install-lb-controller.sh "$LB_ROLE_ARN"
+
+  # Verify:
+  kubectl get pods -n kube-system | grep aws-load-balancer
+
+================================================================================
+STEP 13: Install Karpenter
+================================================================================
+
+  # Get required values from Terraform:
+  CLUSTER_NAME=$(terraform -chdir=terraform/environments/dev output -raw eks_cluster_name)
+  KARPENTER_ROLE_ARN=$(terraform -chdir=terraform/environments/dev output -raw karpenter_role_arn)
+  KARPENTER_QUEUE=$(terraform -chdir=terraform/environments/dev output -raw karpenter_queue_name)
+
+  # Install Karpenter (use --no-hooks to bypass post-install hook timeout):
+  helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
+    --version 1.3.3 \
+    --namespace kube-system \
+    --set settings.clusterName="${CLUSTER_NAME}" \
+    --set settings.interruptionQueue="${KARPENTER_QUEUE}" \
+    --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="${KARPENTER_ROLE_ARN}" \
+    --wait --timeout 10m \
+    --no-hooks
+
+  # Apply NodePool and EC2NodeClass:
+  kubectl apply -f k8s/base/karpenter/nodepool.yaml
+
+================================================================================
+STEP 14: Apply NetworkPolicies
+================================================================================
+
+  kubectl apply -f k8s/base/network-policies/default-deny.yaml
+  kubectl apply -f k8s/base/network-policies/allow-policies.yaml
+
+================================================================================
+STEP 15: Register platform repo in ArgoCD and deploy Application CRDs
+================================================================================
+
+  # Login to ArgoCD:
+  kubectl port-forward svc/argocd-server -n argocd 8443:443 &
+  argocd login localhost:8443 --insecure --username admin \
+    --password "$(kubectl get secret argocd-initial-admin-secret -n argocd \
+      -o jsonpath='{.data.password}' | base64 -d)"
+
+  # Register the platform repo (if private, provide token):
+  argocd repo add https://github.com/<YOUR_ORG>/petclinic-platform.git
+
+  # Apply all dev Application CRDs:
+  kubectl apply -f k8s/argocd/applications/dev/
+
+  # Monitor sync status:
+  argocd app list
+  argocd app wait config-server-dev --sync --health --timeout 300
+
+================================================================================
+STEP 16: Build and push initial Docker images
+================================================================================
+
+  # First: Set GitHub Actions secret AWS_ROLE_ARN in your app repo (GitHub UI):
+  #   Repository Settings > Secrets and Variables > Actions > New Secret
+  #   Name: AWS_ROLE_ARN
+  #   Value: (from terraform output: github_actions_role_arn)
+
+  # Trigger the build workflow from the app repo, OR build manually:
+  cd ../spring-petclinic-microservices
+  export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+  export AWS_REGION=us-east-1
+  ../petclinic-platform/scripts/build-push.sh
+
+================================================================================
+STEP 17: Apply Ingress and wire up Route 53
+================================================================================
+
+  # Apply the ingress:
+  kubectl apply -f k8s/base/ingress/ingress.yaml
+
+  # Wait for ALB to be provisioned (2-3 minutes):
+  kubectl get ingress petclinic-ingress -n petclinic-dev --watch
+
+  # Get ALB hostname:
+  ALB_DNS=$(kubectl get ingress petclinic-ingress -n petclinic-dev \
+    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+  echo "ALB hostname: $ALB_DNS"
+
+  # Get ALB zone ID for your region (us-east-1 = Z35SXDOTRQ7X7K):
+  # See: https://docs.aws.amazon.com/general/latest/gr/elb.html
+
+  # Update terraform.tfvars:
+  # alb_dns_name = "<ALB_DNS>"
+  # alb_zone_id  = "Z35SXDOTRQ7X7K"
+
+  # Re-apply Terraform to create the Route 53 A record:
+  cd terraform/environments/dev
+  terraform plan -out plan.out && terraform apply plan.out
+  cd ../../../
+
+================================================================================
+STEP 18: Verify the deployment
+================================================================================
+
+  # Check all pods are running:
+  kubectl get pods -n petclinic-dev
+
+  # Check ArgoCD sync status:
+  argocd app list
+
+  # Test the application:
+  APP_FQDN=$(terraform -chdir=terraform/environments/dev output -raw dns_app_fqdn)
+  curl -s -o /dev/null -w "%{http_code}" "https://${APP_FQDN}/actuator/health"
+  # Expected: 200
+
+  # Check ArgoCD Applications are Healthy and Synced:
+  argocd app wait --all --health --sync --timeout 600
+
+================================================================================
+STEP 19: (Optional) Apply prod environment
+================================================================================
+
+  # Prod follows the same steps but with:
+  #   - terraform/environments/prod/
+  #   - kubectl context set to the prod cluster
+  #   - ArgoCD manual sync (no automated.prune/selfHeal)
+  #   - kubectl apply -f k8s/argocd/applications/prod/
+
+  # Apply prod Terraform:
+  cd terraform/environments/prod
+  terraform init -backend-config=backend.hcl
+  terraform plan -out plan.out
+  terraform apply plan.out
+
+  # Then repeat steps 7-18 pointing to the prod cluster.
+  # After prod terraform apply, run: ./scripts/setup-env.sh --post-apply
+  # to populate prod RDS URL in the prod Application CRDs.
+
+================================================================================
+DEPLOYMENT COMPLETE
+================================================================================
+  Application URL: https://<petclinic-dev.your-domain.com>
+  ArgoCD UI:       https://localhost:8443 (via port-forward)
+
+  GitHub Actions secrets to set in the app repo:
+    AWS_ROLE_ARN  = (terraform output: github_actions_role_arn from dev)
+    ECR_REGISTRY  = (ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com)

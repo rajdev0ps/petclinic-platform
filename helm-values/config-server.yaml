@@ -1,0 +1,39 @@
+image:
+  name: config-server
+  tag: "v1.0.0"
+
+service:
+  port: 8888
+
+component: server
+
+replicaCount: 1
+
+probes:
+  startup:
+    path: /actuator/health
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 30
+  readiness:
+    path: /actuator/health
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  liveness:
+    path: /actuator/health
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+configMap:
+  data:
+    SPRING_PROFILES_ACTIVE: "docker"
+    GIT_REPO: "https://github.com/spring-petclinic/spring-petclinic-microservices-config"
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

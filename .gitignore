@@ -1,0 +1,66 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+plan.out
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Do NOT ignore .terraform.lock.hcl — it should be committed for reproducible builds
+
+# Sensitive files — NEVER commit
+*.tfvars
+!*.tfvars.example
+backend.hcl
+!backend.hcl.example
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.p8
+credentials
+credentials.*
+kubeconfig
+kubeconfig.*
+aws-credentials
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+._*
+
+# Python (Checkov, scripts)
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env/
+
+# Node (Context7, tooling)
+node_modules/
+package-lock.json
+
+# Temporary
+*.tmp
+*.bak
+*.log
+tmp/

@@ -1,0 +1,8 @@
+# Copy this file to backend.hcl and fill in your values.
+# backend.hcl is gitignored — never commit it.
+# Generated automatically by scripts/setup-env.sh.
+
+bucket         = "petclinic-tfstate-ACCOUNT_ID-REGION"
+region         = "REGION"
+dynamodb_table = "petclinic-terraform-locks"
+encrypt        = true

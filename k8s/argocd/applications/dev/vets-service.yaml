@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vets-service-dev
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: "PLATFORM_REPO_URL"
+    targetRevision: main
+    path: helm/petclinic-service
+    helm:
+      releaseName: vets-service
+      valueFiles:
+        - ../../helm-values/vets-service.yaml
+        - ../../helm-values/dev.yaml
+      parameters:
+        - name: image.registry
+          value: "ECR_REGISTRY_DEV"
+        - name: configMap.data.SPRING_DATASOURCE_URL
+          value: "RDS_JDBC_URL_DEV"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: petclinic-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true

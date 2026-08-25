@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Prod overlay: HA replica counts, petclinic-prod namespace, no HPA (per project decision)
+namespace: petclinic-prod
+
+resources:
+  - ../../base/config-server
+  - ../../base/discovery-server
+  - ../../base/api-gateway
+  - ../../base/customers-service
+  - ../../base/visits-service
+  - ../../base/vets-service
+  - ../../base/genai-service
+  - ../../base/admin-server
+
+# Patch files carry namespace: petclinic-dev because kustomize matches patches to
+# base resources before the namespace transformer runs. The namespace transformer
+# (field above) then changes all resource namespaces to petclinic-prod on output.
+# Do NOT change to petclinic-prod in the patch files — it breaks kustomize matching.
+# genai-service and admin-server intentionally stay at 1 replica per spec (cost saving).
+patches:
+  - path: patches/replicas-config-server.yaml
+  - path: patches/replicas-discovery-server.yaml
+  - path: patches/replicas-api-gateway.yaml
+  - path: patches/replicas-customers-service.yaml
+  - path: patches/replicas-visits-service.yaml
+  - path: patches/replicas-vets-service.yaml
