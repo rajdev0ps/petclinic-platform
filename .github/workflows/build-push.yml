@@ -38,6 +38,7 @@ jobs:
 
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         service:
           - config-server
@@ -98,6 +99,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::995679261046:role/petclinic-github-actions-role
+          audience: sts.amazonaws.com
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: build-push-${{ matrix.service }}
 
