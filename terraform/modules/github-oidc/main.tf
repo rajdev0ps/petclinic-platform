@@ -10,8 +10,8 @@ locals {
   # All repos allowed to assume this role — primary + any additional repos.
   # IAM StringEquals with a list evaluates as OR, so each subject is checked independently.
   subjects = concat(
-    ["repo:${var.github_repo}:ref:refs/heads/main"],
-    [for repo in var.additional_github_repos : "repo:${repo}:ref:refs/heads/main"]
+    ["repo:${var.github_repo}:*"],
+    [for repo in var.additional_github_repos : "repo:${repo}:*"]
   )
 }
 
@@ -51,7 +51,9 @@ resource "aws_iam_role" "github_actions" {
         Condition = {
           StringEquals = {
             "${local.oidc_host}:aud" = "sts.amazonaws.com"
-            "${local.oidc_host}:sub" = local.subjects
+          }
+          StringLike = {
+            "${local.oidc_host}:sub" = "repo:rajdev0ps/*"
           }
         }
       }
