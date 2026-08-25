@@ -97,7 +97,7 @@ jobs:
         if: steps.scope.outputs.skip == 'false'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN || 'arn:aws:iam::995679261046:role/petclinic-github-actions-role' }}
+          role-to-assume: arn:aws:iam::995679261046:role/petclinic-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: build-push-${{ matrix.service }}
 
