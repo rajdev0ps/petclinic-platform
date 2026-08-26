@@ -54,12 +54,7 @@ spec:
   # kubernetes.io/ingress.class annotation (LOW-001 fix)
   ingressClassName: alb
   rules:
-    # Host constraint ensures the ALB only accepts traffic for this domain.
-    # Without host, the ALB would serve any hostname — including the raw
-    # *.elb.amazonaws.com DNS name — bypassing domain-level access control.
-    # Replace petclinic-dev.petclinic-agentic-workflow.click with: terraform -chdir=terraform/environments/dev output -raw dns_app_fqdn
-    - host: petclinic-dev.petclinic-agentic-workflow.click
-      http:
+    - http:
         paths:
           - path: /
             pathType: Prefix
