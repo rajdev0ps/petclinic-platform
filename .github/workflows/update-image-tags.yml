@@ -3,6 +3,17 @@ name: Update Image Tags
 on:
   repository_dispatch:
     types: [app-image-built]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Image commit SHA (e.g. 78286d5)"
+        required: true
+        type: string
+      services:
+        description: "Services to update (e.g. api-gateway)"
+        required: true
+        default: "api-gateway"
+        type: string
 
 # Minimal permissions at workflow level — write only granted on the commit step
 permissions:
@@ -22,8 +33,8 @@ jobs:
 
       - name: Validate inputs
         env:
-          SHA: ${{ github.event.client_payload.sha }}
-          SERVICES: ${{ github.event.client_payload.services }}
+          SHA: ${{ github.event.inputs.sha || github.event.client_payload.sha }}
+          SERVICES: ${{ github.event.inputs.services || github.event.client_payload.services }}
         run: |
           # Reject malformed SHAs — must be 7-40 hex characters
           if ! [[ "${SHA}" =~ ^[a-f0-9]{7,40}$ ]]; then
@@ -47,8 +58,8 @@ jobs:
 
       - name: Update image.tag in helm-values
         env:
-          SHA: ${{ github.event.client_payload.sha }}
-          SERVICES: ${{ github.event.client_payload.services }}
+          SHA: ${{ github.event.inputs.sha || github.event.client_payload.sha }}
+          SERVICES: ${{ github.event.inputs.services || github.event.client_payload.services }}
         run: |
           VALID_SERVICES="config-server discovery-server api-gateway customers-service visits-service vets-service genai-service admin-server"
 
@@ -70,8 +81,8 @@ jobs:
 
       - name: Commit and push updated helm-values
         env:
-          SHA: ${{ github.event.client_payload.sha }}
-          SERVICES: ${{ github.event.client_payload.services }}
+          SHA: ${{ github.event.inputs.sha || github.event.client_payload.sha }}
+          SERVICES: ${{ github.event.inputs.services || github.event.client_payload.services }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
