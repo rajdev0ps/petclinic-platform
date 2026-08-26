@@ -26,12 +26,12 @@ module "eks" {
   cluster_sg_id   = module.vpc.eks_cluster_sg_id
   node_sg_id      = module.vpc.eks_node_sg_id
 
-  # Node group — t4g.small ARM64 (6 nodes x 2GB = 12GB RAM, 1-2 pods per node)
+  # Node group — t4g.small ARM64 (8 nodes x 2GB = 16GB RAM, exactly 1 pod per node for Graviton ARM64)
   node_instance_types = ["t4g.small"]
   node_ami_type       = "AL2023_ARM_64_STANDARD"
-  node_min_size       = 5
-  node_max_size       = 10
-  node_desired_size   = 5
+  node_min_size       = 8
+  node_max_size       = 12
+  node_desired_size   = 8
   node_disk_size      = 20
 
   # Restrict public EKS API to known operator IPs only.
