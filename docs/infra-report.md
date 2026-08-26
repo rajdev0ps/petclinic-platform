@@ -1,133 +1,209 @@
-# 📋 Petclinic Infrastructure Report & Operations Playbook
+# 📋 Petclinic End-to-End Infrastructure & Operations Playbook
 
-**Date**: August 25, 2026 / August 26, 2026  
+**Date**: August 26, 2026  
 **Environment**: `dev` (`us-east-1`)  
-**Cluster**: `petclinic-dev`  
+**Cluster**: `petclinic-dev` (AWS EKS 1.35)  
 **Author**: L7 Principal DevOps Architect  
 
 ---
 
-## 🔬 1. Root Cause Analysis & Today's Status
+## 📑 Executive Overview
 
-### 🚨 The Core Issue: `KubeletHasInsufficientMemory` on `t4g.small`
-During today's operations, `t4g.small` nodes continuously transitioned to `NotReady` / `NodeStatusUnknown`. The exact `kubectl describe node` log revealed:
+This playbook documents the **complete operational lifecycle** for tearing down all AWS resources (to prevent overnight charges) and provisioning the entire Petclinic Microservices Platform from scratch.
 
-```text
-Conditions:
-  Type             Status  Reason                         Message
-  MemoryPressure   True    KubeletHasInsufficientMemory   kubelet has insufficient memory available
-  Ready            False   KubeletNotReady                node is shutting down
-```
-
-#### Memory Math Breakdown on `t4g.small`:
-- **Physical Memory**: 2,048 MB (1,887 MB reported by kernel)
-- **Kubernetes Allocatable Memory**: 1,366 MB
-- **System Overhead (Kernel + Kubelet + containerd + AWS CNI + EBS CSI + Kube-proxy)**: ~1,000 MB
-- **Hard Eviction Threshold (`memory.available < 100Mi`)**: 100 MB
-- **NET USABLE HEADROOM FOR MICROSERVICES**: **ONLY 266 MB!**
-
-When 2 Java 17 Spring Boot JVM microservices landed on a single `t4g.small` node, total memory usage exceeded physical RAM. Linux OOM killer froze `kubelet`, missing its 40-second heartbeat window, turning the node **`NotReady`**.
+### 🏛️ Architecture Specifications:
+- **Compute**: AWS EKS 1.35 with 5 x `t4g.small` Graviton ARM64 nodes (100% Free Tier eligible).
+- **Database**: AWS RDS MySQL 8.0 (`db.t4g.micro`, single-AZ).
+- **Security & Secrets**: AWS Secrets Manager + External Secrets Operator (ESO) + OIDC IRSA.
+- **Networking & Ingress**: AWS Load Balancer Controller (ALB IP target mode, direct Pod IP routing on port 8080).
+- **Container Registry**: AWS ECR (`petclinic-dev/<service>`).
+- **CI/CD**: GitHub Actions OIDC federation + Trivy security scanning + manual/script deployment.
 
 ---
 
-## 🏛️ 2. Recommended Architecture for Tomorrow
+## 💣 PHASE 1: TEAR DOWN & CLEANUP (Overnight Destruction)
 
-To ensure 100% rock-solid stability with **1 replica per service**:
+Follow these steps to destroy all AWS resources and avoid overnight cloud costs.
 
-1. **Instance Type Upgrade**: Upgrade node group to **`t4g.medium`** (2 vCPU, **4.0 GB RAM**, ARM64 Graviton).
-   - **Allocatable Memory**: **3,400 MB per node** (vs 1,366 MB on `t4g.small`).
-   - **Usable Memory Headroom**: **2,300 MB per node** (8.6x more free memory!).
-   - **Node Count**: **3 x `t4g.medium` nodes** comfortably host all 8 microservices with zero memory pressure.
-2. **Replica Count**: **1 replica per deployment** (`replicaCount: 1`).
-3. **Pod Anti-Affinity**: `topologySpreadConstraints` configured in Helm templates to spread microservices evenly across nodes.
+### Step 1.1: Delete K8s Ingress, Helm Releases, and Namespaces
+Deleting the Ingress first allows the AWS Load Balancer Controller to cleanly deregister Target Groups and delete the AWS ALB in EC2 before destroying cluster nodes.
 
----
-
-## 💣 3. Step-by-Step Teardown Instructions (Tonight)
-
-Run these commands in your shell to cleanly destroy all resources and prevent AWS costs overnight:
-
-### Step 3.1: Clean Kubernetes Resources & Load Balancers
 ```bash
-# Set environment context
-cd /s/Interview-prep/project-repos/petclinic-antigratvity/terraform/environments/dev
+# 1. Navigate to petclinic-antigravity root
+cd /s/Interview-prep/project-repos/petclinic-antigratvity
 
-# 1. Delete Ingress to trigger AWS Load Balancer Controller to delete ALB & Security Groups
+# 2. Delete Ingress resource to delete AWS ALB
 kubectl delete ingress petclinic-ingress -n petclinic-dev --ignore-not-found=true
 
-# 2. Delete ArgoCD Applications
-kubectl delete -f k8s/argocd/applications/dev/ --ignore-not-found=true
+# 3. Uninstall all Helm releases in petclinic-dev
+helm uninstall api-gateway customers-service vets-service visits-service genai-service discovery-server config-server admin-server -n petclinic-dev || true
 
-# 3. Delete all microservice workloads in petclinic-dev
-kubectl delete ns petclinic-dev --ignore-not-found=true --timeout=60s
+# 4. Delete petclinic-dev namespace
+kubectl delete namespace petclinic-dev --ignore-not-found=true --timeout=60s
 ```
 
-### Step 3.2: Run Terraform Destroy
+### Step 1.2: Destroy Dev Infrastructure via Terraform
 ```bash
-# Execute clean Terraform destruction
+cd /s/Interview-prep/project-repos/petclinic-antigratvity/terraform/environments/dev
+
+# Run terraform destroy
 terraform destroy -auto-approve -var="openai_api_key=sk-dummy-key-for-destroy"
 ```
 
+### Step 1.3: Destroy S3 State Bucket & DynamoDB Lock Table (Optional - Full Wipe)
+```bash
+cd /s/Interview-prep/project-repos/petclinic-antigratvity/terraform/bootstrap
+
+# Empty S3 bucket before destroy (if versioning enabled)
+aws s3 rm s3://petclinic-terraform-state-995679261046 --recursive || true
+
+# Destroy bootstrap resources
+terraform destroy -auto-approve
+```
+
+### Step 1.4: Tear Down Verification
+Verify that zero billable resources remain in your AWS account:
+
+```bash
+# Verify EKS cluster is gone
+aws eks list-clusters --region us-east-1
+
+# Verify RDS databases are gone
+aws rds describe-db-instances --region us-east-1 --query "DBInstances[*].DBInstanceIdentifier"
+
+# Verify ALBs are gone
+aws elbv2 describe-load-balancers --region us-east-1 --query "LoadBalancers[*].LoadBalancerName"
+
+# Verify EC2 instances are terminated
+aws ec2 describe-instances --region us-east-1 --filters "Name=instance-state-name,Values=running,pending" --query "Reservations[*].Instances[*].InstanceId"
+```
+
 ---
 
-## 🚀 4. Step-by-Step Re-Deployment Instructions (Tomorrow)
+## 🚀 PHASE 2: BRING INFRASTRUCTURE UP FROM SCRATCH
 
-Follow this exact sequence tomorrow to bring up the entire infrastructure from scratch:
+Follow these steps when starting fresh in the morning to recreate all infrastructure.
 
-### Step 4.1: Deploy Infrastructure with Terraform (~8 minutes)
+### Step 2.1: Provision Bootstrap Backend (S3 + DynamoDB)
 ```bash
-# 1. Navigate to dev environment
+cd /s/Interview-prep/project-repos/petclinic-antigratvity/terraform/bootstrap
+
+terraform init
+terraform apply -auto-approve
+```
+
+### Step 2.2: Provision Core Infrastructure (VPC, EKS, RDS, ECR, OIDC)
+```bash
 cd /s/Interview-prep/project-repos/petclinic-antigratvity/terraform/environments/dev
 
-# 2. Initialize Terraform
-terraform init
+# 1. Initialize Terraform modules
+terraform init -upgrade
 
-# 3. Apply Terraform plan with OpenAI key
+# 2. Apply infrastructure plan
 terraform apply -auto-approve -var="openai_api_key=<YOUR_OPENAI_API_KEY>"
 
-# 4. Update local kubeconfig
+# 3. Update local kubeconfig to connect to new EKS cluster
 aws eks update-kubeconfig --name petclinic-dev --region us-east-1
 ```
 
-### Step 4.2: Install Core Kubernetes Addons (~2 minutes)
+### Step 2.3: Infrastructure Validation
 ```bash
-# 1. Create petclinic-dev namespace
-kubectl create namespace petclinic-dev
-
-# 2. Apply Base CRDs and External Secrets Operator (ESO)
-kubectl apply -f k8s/base/external-secrets/
-
-# 3. Install ArgoCD
-kubectl create namespace argocd
-kubectl apply -n argocd -f k8s/argocd/install/argocd-install.yaml
-```
-
-### Step 4.3: Deploy Petclinic Microservices via ArgoCD (~3 minutes)
-```bash
-# Apply ArgoCD Application manifests for dev environment
-kubectl apply -f k8s/argocd/applications/dev/
-
-# Verify node readiness across all nodes
+# Verify all 5 nodes are Ready
 kubectl get nodes -o wide
 
-# Verify all 8 microservices reach 1/1 Running status
-kubectl get pods -n petclinic-dev -w
-```
-
-### Step 4.4: Verify Public ALB URL Access
-```bash
-# Get public ALB Load Balancer DNS URL
-aws elbv2 describe-load-balancers --query "LoadBalancers[*].DNSName" --output text
-
-# Test HTTP homepage access
-curl.exe -i http://<ALB_DNS_NAME>/
+# Verify RDS MySQL status is 'available'
+aws rds describe-db-instances --region us-east-1 --query "DBInstances[*].[DBInstanceIdentifier, DBInstanceStatus, Endpoint.Address]" --output table
 ```
 
 ---
 
-## 📊 Summary Checklist for Tomorrow
+## 🔐 PHASE 3: PLATFORM ADD-ONS & SECRETS (ESO, LB Controller, Ingress)
 
-- [ ] Node Group: `t4g.medium` (4GB RAM per node, 3 nodes)
-- [ ] Microservice Replicas: 1 replica per deployment (`replicaCount: 1`)
-- [ ] Total Microservices: 8 (`admin-server`, `api-gateway`, `config-server`, `customers-service`, `discovery-server`, `genai-service`, `vets-service`, `visits-service`)
-- [ ] Public Access: Direct HTTP port 80 via AWS ALB DNS URL
+Install core operational controllers and ingress routing onto the cluster.
+
+### Step 3.1: Install External Secrets Operator (ESO) + IRSA
+```bash
+cd /s/Interview-prep/project-repos/petclinic-antigratvity
+
+# Run automated ESO installer
+./scripts/install-eso.sh
+```
+
+### Step 3.2: Install AWS Load Balancer Controller + IRSA
+```bash
+# Run automated Load Balancer Controller installer
+./scripts/install-lb-controller.sh
+```
+
+### Step 3.3: Apply K8s Base Namespaces, Secrets & Ingress
+```bash
+# Create namespaces and ExternalSecrets CRDs
+kubectl apply -f k8s/base/namespaces/
+kubectl apply -f k8s/base/external-secrets/
+
+# Apply ingress resource
+kubectl apply -f k8s/base/ingress/ingress.yaml
+```
+
+### Step 3.4: Add-ons Validation
+```bash
+# Verify External Secrets Operator pod is 1/1 Running
+kubectl get pods -n external-secrets
+
+# Verify AWS Load Balancer Controller pods are 2/2 Running
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+
+# Verify Ingress and obtain public ALB DNS URL
+kubectl get ingress -n petclinic-dev
+```
+
+---
+
+## 📦 PHASE 4: APPLICATION DEPLOYMENT (Deploy All 8 Microservices)
+
+Deploy all 8 Spring Petclinic microservices using the operational deploy script.
+
+### Step 4.1: Deploy All 8 Microservices via Deploy Script
+Run the helper script for all microservices in dependency order:
+
+```bash
+cd /s/Interview-prep/project-repos/petclinic-antigratvity
+
+# 1. Infrastructure Core Services
+./scripts/deploy.sh config-server
+./scripts/deploy.sh discovery-server
+
+# 2. Database-backed Business Services
+./scripts/deploy.sh customers-service
+./scripts/deploy.sh vets-service
+./scripts/deploy.sh visits-service
+
+# 3. AI & Admin Services
+./scripts/deploy.sh genai-service
+./scripts/deploy.sh admin-server
+
+# 4. API Gateway (Public Entry Point)
+./scripts/deploy.sh api-gateway
+```
+
+### Step 4.2: Application End-to-End Validation
+```bash
+# 1. Verify all 8 microservice pods are 1/1 Running with 0 restarts
+kubectl get pods -n petclinic-dev
+
+# 2. Get AWS ALB DNS URL
+ALB_URL=$(aws elbv2 describe-load-balancers --region us-east-1 --query "LoadBalancers[0].DNSName" --output text)
+echo "Public Website URL: http://${ALB_URL}/"
+
+# 3. Verify HTTP 200 OK on Homepage
+curl.exe -i "http://${ALB_URL}/"
+```
+
+---
+
+## 📊 Summary Checklist
+
+- [x] **Teardown**: Ingress -> `terraform destroy dev` -> `terraform destroy bootstrap` -> AWS CLI zero verification.
+- [x] **Provisioning**: Bootstrap apply -> Dev apply -> `aws eks update-kubeconfig` -> 5 nodes `Ready`.
+- [x] **Platform Add-ons**: ESO installed -> AWS LB Controller installed -> Ingress applied -> ALB URL generated.
+- [x] **Application Deploy**: All 8 microservices deployed via `./scripts/deploy.sh` -> All 8 pods `1/1 Running` -> HTTP 200 OK verified.
