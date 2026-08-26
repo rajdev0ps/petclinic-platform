@@ -26,7 +26,7 @@ module "eks" {
   cluster_sg_id   = module.vpc.eks_cluster_sg_id
   node_sg_id      = module.vpc.eks_node_sg_id
 
-  # Node group — t4g.small ARM64 (100% AWS Free Tier, 5 nodes x 2GB)
+  # Node group — t4g.small ARM64 (100% AWS Free Tier eligible, 5 nodes x 2GB)
   node_instance_types = ["t4g.small"]
   node_ami_type       = "AL2023_ARM_64_STANDARD"
   node_min_size       = 5

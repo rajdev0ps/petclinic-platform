@@ -55,19 +55,19 @@ variable "node_ami_type" {
 variable "node_min_size" {
   description = "Minimum number of nodes in the managed node group"
   type        = number
-  default     = 2
+  default     = 5
 }
 
 variable "node_max_size" {
   description = "Maximum number of nodes in the managed node group"
   type        = number
-  default     = 4
+  default     = 10
 }
 
 variable "node_desired_size" {
   description = "Desired number of nodes in the managed node group"
   type        = number
-  default     = 2
+  default     = 5
 }
 
 variable "node_disk_size" {

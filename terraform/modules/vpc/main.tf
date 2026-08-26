@@ -181,14 +181,14 @@ resource "aws_security_group_rule" "node_ingress_kubelet" {
   description              = "Kubelet API from cluster control plane"
 }
 
-resource "aws_security_group_rule" "node_ingress_nodeport_alb" {
-  type                     = "ingress"
-  from_port                = 30000
-  to_port                  = 32767
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.eks_node.id
-  source_security_group_id = aws_security_group.alb.id
-  description              = "NodePort services from ALB"
+resource "aws_security_group_rule" "node_ingress_alb" {
+  type              = "ingress"
+  from_port         = 0
+  to_port           = 65535
+  protocol          = "tcp"
+  security_group_id = aws_security_group.eks_node.id
+  cidr_blocks       = [var.vpc_cidr]
+  description       = "Allow traffic from VPC subnets/ALBs to EKS nodes and pods (NodePort + IP mode)"
 }
 
 resource "aws_security_group_rule" "node_egress_all" {
@@ -235,14 +235,14 @@ resource "aws_security_group_rule" "alb_ingress_https" {
   description       = "HTTPS from internet"
 }
 
-resource "aws_security_group_rule" "alb_egress_nodeport" {
+resource "aws_security_group_rule" "alb_egress_nodes" {
   type                     = "egress"
-  from_port                = 30000
-  to_port                  = 32767
+  from_port                = 0
+  to_port                  = 65535
   protocol                 = "tcp"
   security_group_id        = aws_security_group.alb.id
   source_security_group_id = aws_security_group.eks_node.id
-  description              = "To NodePort services on EKS nodes"
+  description              = "To EKS nodes and pods (NodePort + IP mode)"
 }
 
 resource "aws_security_group_rule" "alb_egress_health" {
