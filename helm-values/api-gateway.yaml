@@ -1,6 +1,6 @@
 image:
   name: api-gateway
-  tag: "569f586"
+  tag: "74aef4c"
 service:
   port: 8080
 component: gateway
