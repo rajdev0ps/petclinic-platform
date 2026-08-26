@@ -80,3 +80,25 @@ resource "aws_iam_role_policy" "ecr_push" {
     ]
   })
 }
+
+# ─── IAM Policy: EKS Deploy & Describe ────────────────────────────────────────
+resource "aws_iam_role_policy" "eks_deploy" {
+  name = "eks-deploy"
+  role = aws_iam_role.github_actions.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "EKSClusterDescribe"
+        Effect   = "Allow"
+        Action   = [
+          "eks:DescribeCluster",
+          "eks:ListClusters"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
