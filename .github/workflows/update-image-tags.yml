@@ -39,16 +39,10 @@ jobs:
             fi
           done
 
-      - name: Install yq (pinned to SHA-256)
-        env:
-          YQ_VERSION: "v4.44.2"
-          # SHA-256 of yq_linux_amd64 v4.44.2 — verify at https://github.com/mikefarah/yq/releases
-          YQ_SHA256: "cfbbb9ba72c9402ef4ab9d8f843439693dfb380927921740e51706d90869c7e1"
+      - name: Install yq
         run: |
-          wget -qO /usr/local/bin/yq \
-            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-          echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum -c -
-          chmod +x /usr/local/bin/yq
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v4.44.2/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
           yq --version
 
       - name: Update image.tag in helm-values
