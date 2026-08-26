@@ -1,8 +1,8 @@
-# Dev environment values — POC uses prod-equivalent settings.
-# Per-service replica counts, HPA, and PDB are defined in per-service values files.
-# This file holds only the settings that differ at the environment level.
-
 replicaCount: 1
 
 image:
   pullPolicy: Always
+
+configMap:
+  data:
+    JAVA_TOOL_OPTIONS: "-Xms128m -Xmx256m -XX:MaxMetaspaceSize=96m"
