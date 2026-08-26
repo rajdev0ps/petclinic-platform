@@ -1,0 +1,118 @@
+name: Selective Helm Deploy
+
+on:
+  workflow_run:
+    workflows: ["Update Image Tags"]
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Service to deploy (e.g. api-gateway)"
+        required: true
+        default: "api-gateway"
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: petclinic-dev
+  NAMESPACE: petclinic-dev
+
+jobs:
+  deploy:
+    name: Deploy Changed Services via Helm
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout platform repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed services in helm-values
+        id: detect
+        run: |
+          MANUAL_SERVICE="${{ github.event.inputs.service }}"
+          if [[ -n "$MANUAL_SERVICE" ]]; then
+            echo "SERVICES=$MANUAL_SERVICE" >> "$GITHUB_OUTPUT"
+            echo "Deploying manually requested service: $MANUAL_SERVICE"
+            exit 0
+          fi
+
+          # Find changed files in helm-values/ from previous commit
+          CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD | grep '^helm-values/' || true)
+          
+          if [[ -z "$CHANGED_FILES" ]]; then
+            echo "No helm-values changed in this commit."
+            echo "SERVICES=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          SERVICES=""
+          for file in $CHANGED_FILES; do
+            svc=$(basename "$file" .yaml)
+            if [[ "$svc" != "dev" && "$svc" != "prod" ]]; then
+              SERVICES="$SERVICES $svc"
+            fi
+          done
+
+          echo "SERVICES=$(echo $SERVICES | xargs)" >> "$GITHUB_OUTPUT"
+          echo "Detected changed services: $SERVICES"
+
+      - name: Configure AWS Credentials (OIDC)
+        if: steps.detect.outputs.SERVICES != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::995679261046:role/petclinic-github-actions-role
+          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl & EKS kubeconfig
+        if: steps.detect.outputs.SERVICES != ''
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Install Helm
+        if: steps.detect.outputs.SERVICES != ''
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.14.0'
+
+      - name: Deploy changed services via Helm
+        if: steps.detect.outputs.SERVICES != ''
+        run: |
+          REGISTRY="995679261046.dkr.ecr.${AWS_REGION}.amazonaws.com/petclinic-dev"
+
+          for service in ${{ steps.detect.outputs.SERVICES }}; do
+            TAG=$(yq eval '.image.tag' "helm-values/${service}.yaml")
+            echo "=========================================="
+            echo "Deploying ${service}:${TAG} to EKS..."
+            echo "=========================================="
+
+            HELM_ARGS=(
+              --namespace ${{ env.NAMESPACE }}
+              --set "image.registry=${REGISTRY}"
+              --set "image.name=${service}"
+              --set "image.tag=${TAG}"
+              -f "helm-values/${service}.yaml"
+              -f "helm-values/dev.yaml"
+            )
+
+            # Inject RDS_URL for database-backed services
+            if [[ "$service" =~ ^(customers-service|vets-service|visits-service)$ ]]; then
+              echo "Injecting RDS connection string for $service..."
+              # Fetch RDS endpoint dynamically from EKS or Secrets
+              RDS_URL="jdbc:mysql://petclinic-dev-mysql.ca98wu4yw5gu.us-east-1.rds.amazonaws.com:3306/petclinic"
+              HELM_ARGS+=(--set "configMap.data.SPRING_DATASOURCE_URL=${RDS_URL}")
+            fi
+
+            helm upgrade --install "$service" helm/petclinic-service/ "${HELM_ARGS[@]}"
+
+            echo "Waiting for rollout of $service..."
+            kubectl rollout status deployment/"$service" -n ${{ env.NAMESPACE }} --timeout=120s
+          done
